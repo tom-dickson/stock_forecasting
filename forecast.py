@@ -9,6 +9,8 @@ import tensorflow as tf
 
 # contains stock data
 df = pd.read_csv('prices.csv')
+df.date = pd.to_datetime(df.date, format='%Y-%m-%d %H:%M:%S')
+df['year'] = pd.DatetimeIndex(df.date).year
 
 def time_series(symbol: str):
     """
@@ -32,15 +34,18 @@ def scale(frame):
     """
     scaler = MinMaxScaler()
     arr = frame[['open', 'low', 'high', 'close']].to_numpy()
-    arr_scaled = scaler.fit_transform(arr)
-    df = pd.DataFrame(arr_scaled, columns=['open', 'low', 'high', 'close'])
-    return df
+    scaler = scaler.fit(arr)
+    arr_scaled = scaler.transform(arr)
+    df = pd.DataFrame(arr, columns=['open', 'low', 'high', 'close'])
+    df['symbol'] = frame['symbol']
+    return df, scaler
 
 
 def prepare_data(frame, window):
     """
     Prepares/splits time series data for input into model
     """
+    frame.drop(columns=['symbol'], inplace=True)
     windows = []
     data = frame.to_numpy()
     for i in range(data.shape[0] - window):
@@ -73,13 +78,59 @@ def plot_results(ticker, include_train=True):
     return round((sum(loss)/len(loss)), 3)
 
 
-def train_model(stock):
+def plot_predictions(symbol):
+    subset = df[(df.symbol==symbol) & (df.year >= 2015)]
+    scaled, scaler = scale(subset)
+
+    a, b, c, d = prepare_data(scaled, 5)
+    x_t = np.concatenate([a, c])
+    y_t = np.concatenate([b, d])
+
+    results = model.evaluate(x_t, y_t)
+    print(results)
+
+    plt.plot(model.predict(x_t), label='predicted closing price')
+    plt.plot(np.squeeze(y_t), alpha=.7, label = 'actual closing price')
+
+    vals = ['January 1, 2015', 'July 1, 2015', 'January 1, 2016', 'July 1, 2016']
+    ticks = [0, 182, 366, 547]
+    plt.ylabel('Stock Price in USD')
+    plt.xlabel('Day')
+    plt.xticks(ticks, vals)
+    plt.title(f'{symbol} MSE: {round(results[0], 2)}')
+    plt.legend()
+    plt.show()
+
+
+def train_model():
     """
     Given ticker symbol, trains lstm model and returns predictions and actuals
     """
-    stock = scale(df[df.symbol==stock])
-    X_train, y_train, X_test, y_test = prepare_data(stock, 5)
+    subset = df[df.year < 2015].reset_index(drop=True)
+    frame, scaler = scale(subset)
 
+    print(frame.head())
+
+    x_train_sets = []
+    y_train_sets = []
+    x_test_sets = []
+    y_test_sets = []
+
+    for symbol in frame.symbol.unique():
+        print(symbol)
+        X_train, y_train, X_test, y_test = prepare_data(frame[frame.symbol==symbol]
+                                            , 5)
+        print(X_train.shape)
+        x_train_sets.append(X_train)
+        y_train_sets.append(y_train)
+        x_test_sets.append((symbol, X_test))
+        y_test_sets.append(y_test)
+
+    X_train = np.concatenate(x_train_sets)
+    y_train = np.concatenate(y_train_sets)
+
+    print(X_train.shape)
+    print(y_train.shape)
 
     model = tf.keras.Sequential()
     model.add(tf.keras.layers.LSTM(units=50, activation='relu'))
@@ -89,20 +140,11 @@ def train_model(stock):
                 loss='mse',
                 metrics=['accuracy'])
 
-    history = model.fit(X_train, y_train, epochs=10)
-
-    predicted = model.predict(X_test)
-    actual_close = np.squeeze(y_test)
-    predicted_train = model.predict(X_train)
-    actual_train = np.squeeze(y_train)
-    return predicted, actual_close, predicted_train, actual_train, history.history
+    history = model.fit(X_train, y_train, epochs=2, validation_split=.1)
+    return model, history
 
 
-# Training and evaluating the model
-sample = random.sample(list(df.symbol.unique()), 10)
-mse = []
-for stock in sample:
-    predicted, actual_close, predicted_train, actual_train, history = train_model(stock)
-    loss = plot_results(stock)
-    mse.append(loss)
-print(f'Average mean squared error: {round((sum(mse)/len(mse)), 2)}')
+model, history = train_model()
+model.save("stock_model")
+for i in random.sample(list(df.symbol.unique()), 20):
+    plot_predictions(i)
